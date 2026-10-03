@@ -552,6 +552,16 @@ class Database:
                 )
         return await self.get_user(telegram_id)
 
+    async def revoke_access(self, telegram_id: int) -> None:
+        if self.is_sqlite:
+            import aiosqlite
+            async with aiosqlite.connect(self._sqlite_path) as db:
+                await db.execute("UPDATE users SET channel_subscribed = 0, access_granted = 0 WHERE telegram_id = ?;", (telegram_id,))
+                await db.commit()
+        else:
+            async with self._pg_pool.acquire() as conn:
+                await conn.execute("UPDATE users SET channel_subscribed = FALSE, access_granted = FALSE WHERE telegram_id = $1;", telegram_id)
+
     async def get_users_count(self) -> int:
         if self.is_sqlite:
             import aiosqlite
@@ -706,35 +716,66 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as notify_err:
         logger.error("Adminga /start xabarnomasini yuborishda xatolik: %s", notify_err)
 
-    if db_user.get("access_granted"):
+    # 3-BOSQICH: Telegram API orqali kanalga a'zolikni jonli tekshirish
+    is_member = False
+    try:
+        member = await context.bot.get_chat_member(chat_id=config.channel_username, user_id=user.id)
+        is_member = _is_channel_member(member.status)
+    except Exception as check_err:
+        logger.warning("Kanal a'zoligini jonli tekshirishda xatolik (%d): %s", user.id, check_err)
+
+    if not is_member:
+        was_previously_subscribed = bool(
+            db_user
+            and (
+                db_user.get("channel_subscribed")
+                or db_user.get("access_granted")
+                or db_user.get("phone_verified")
+            )
+        )
+        await db.revoke_access(user.id)
+        channel_url = _get_channel_url(config.channel_username)
+        if was_previously_subscribed:
+            await update.message.reply_text(
+                "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETGANSIZ!</b>\\n\\n"
+                "MaktabX xizmatidan foydalanish uchun rasmiy kanalni tark etmasligingiz so'raladi.\\n\\n"
+                "Saytga kirish huquqini tiklash uchun iltimos kanalga <b>qayta obuna bo'ling</b> "
+                "va <b>A'zolikni tekshirish</b> tugmasini bosing.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_channel_subscription_keyboard(channel_url),
+            )
+        else:
+            await update.message.reply_text(
+                "📢 <b>KANALGA A'ZO BO'LISH TALAB ETILADI</b>\\n\\n"
+                "MaktabX xizmatidan foydalanish uchun rasmiy kanalimizga a'zo bo'lishingiz kerak.\\n\\n"
+                "Kanalga a'zo bo'lgach, davom etish uchun <b>A'zolikni tekshirish</b> tugmasini bosing.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_channel_subscription_keyboard(channel_url),
+            )
+        return
+
+    await db.update_channel_subscribed(user.id, True)
+
+    # 4-BOSQICH: Telefon raqamini tekshirish (faqat bir marta olinadi)
+    if db_user and db_user.get("phone_verified"):
+        await db.grant_access(user.id)
         await update.message.reply_text(
-            "✅ <b>Siz allaqachon tasdiqlangansiz.</b>\\n\\n"
-            "MaktabX tizimidan to'liq foydalanishingiz mumkin. Quyidagi tugma orqali kiring.",
+            "✅ <b>Xush kelibsiz!</b>\\n\\n"
+            "Kanal a'zoligingiz va profilingiz tasdiqlangan.\\n"
+            "MaktabX tizimidan to'liq foydalanishingiz mumkin. Quyidagi tugma orqali kiring:",
             parse_mode=ParseMode.HTML,
             reply_markup=get_maktabx_access_keyboard(config.maktabx_url),
         )
         return
 
-    if not db_user.get("channel_subscribed"):
-        channel_url = _get_channel_url(config.channel_username)
-        await update.message.reply_text(
-            "📢 <b>KANALGA A'ZO BO'LISH TALAB ETILADI</b>\\n\\n"
-            "MaktabX xizmatidan foydalanish uchun rasmiy kanalimizga a'zo bo'lishingiz kerak.\\n\\n"
-            "A'zo bo'lgach, davom etish uchun <b>A'zolikni tekshirish</b> tugmasini bosing.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_channel_subscription_keyboard(channel_url),
-        )
-        return
-
-    if not db_user.get("phone_verified"):
-        await update.message.reply_text(
-            "📱 <b>TELEFON RAQAMNI TASDIQLASH</b>\\n\\n"
-            "Xavfsizlik maqsadida va zarurat tug'ilganda siz bilan MaktabX bo'yicha bog'lanish uchun "
-            "Telegram telefon raqamingizni yuboring.\\n\\n"
-            "Telefon raqamingiz faqat ko'rsatilgan MaktabX aloqa maqsadlarida ishlatiladi.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_phone_request_keyboard(),
-        )
+    await update.message.reply_text(
+        "📱 <b>TELEFON RAQAMNI TASDIQLASH</b>\\n\\n"
+        "Xavfsizlik maqsadida va zarurat tug'ilganda siz bilan MaktabX bo'yicha bog'lanish uchun "
+        "Telegram telefon raqamingizni yuboring.\\n\\n"
+        "Telefon raqamingiz faqat ko'rsatilgan MaktabX aloqa maqsadlarida ishlatiladi.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_phone_request_keyboard(),
+    )
 
 
 async def check_subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -757,6 +798,7 @@ async def check_subscription_callback(update: Update, context: ContextTypes.DEFA
         return
 
     if not is_member:
+        await db.revoke_access(user.id)
         await query.answer("❌ Siz hali kanalga a'zo bo'lmadingiz.\\n\\nIltimos, kanalga a'zo bo'ling va tugmani qayta bosing.", show_alert=True)
         return
 

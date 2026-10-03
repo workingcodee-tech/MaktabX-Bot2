@@ -99,76 +99,120 @@ export default function App() {
   const handleStart = () => {
     addMessage({ sender: 'user', text: '/start' });
 
+    const isCurrentlySubscribed = userState.channelSubscribed;
+    const wasPreviouslyVerified = userState.accessGranted || userState.phoneVerified;
+    const effectiveAccess = isCurrentlySubscribed && userState.phoneVerified;
+
     // Send admin notification
     const time = new Date().toLocaleTimeString('uz-UZ', { hour12: false });
     setAdminNotifications((prev) => [
       {
         id: Math.random().toString(),
-        title: '🔔 YANGI FOYDALANUVCHI',
-        content: `🆔 ID: ${userState.id}\n👤 Ismi: ${userState.firstName}\n👤 Familiyasi: ${userState.lastName}\n🔗 Username: @${userState.username}\n📅 Boshlangan sana: 03.10.2026\n🕐 Boshlangan vaqt: ${time}\n📢 Kanal: ${userState.channelSubscribed ? "✅ A'zo bo'lgan" : 'Tekshirilmadi'}\n📱 Telefon: ${userState.phone || 'Berilmagan'}\n🔐 Ruxsat: ${userState.accessGranted ? '✅ Berilgan' : 'Berilmagan'}`,
+        title: wasPreviouslyVerified ? '🔄 QAYTA /START BOSILDI' : '🔔 YANGI FOYDALANUVCHI',
+        content: `🆔 ID: ${userState.id}\n👤 Ismi: ${userState.firstName}\n👤 Familiyasi: ${userState.lastName}\n🔗 Username: @${userState.username}\n📅 Boshlangan sana: 03.10.2026\n🕐 Boshlangan vaqt: ${time}\n📢 Kanal: ${isCurrentlySubscribed ? "✅ A'zo bo'lgan" : "❌ A'zo emas (Chiqib ketgan)"}\n📱 Telefon: ${userState.phone || 'Berilmagan'}\n🔐 Ruxsat: ${effectiveAccess ? '✅ Berilgan' : '❌ Berilmagan'}`,
         userId: userState.id,
         time,
       },
       ...prev,
     ]);
 
-    if (userState.accessGranted) {
-      addMessage({
-        sender: 'bot',
-        text: '✅ <b>Siz allaqachon tasdiqlangansiz.</b>\n\nMaktabX tizimidan to\'liq foydalanishingiz mumkin. Quyidagi tugma orqali kiring.',
-        buttons: [{ label: '🚀 MAKTABX GA KIRISH', action: 'open_maktabx', url: envVars.url, primary: true }],
-      });
-      return;
-    }
+    // 1. Har doim birinchi navbatda kanal a'zoligini jonli tekshiramiz!
+    if (!isCurrentlySubscribed) {
+      setUserState((prev) => ({ ...prev, accessGranted: false }));
 
-    if (!userState.channelSubscribed) {
-      addMessage({
-        sender: 'bot',
-        text: "📢 <b>KANALGA A'ZO BO'LISH TALAB ETILADI</b>\n\nMaktabX xizmatidan foydalanish uchun rasmiy kanalimizga a'zo bo'lishingiz kerak.\n\nA'zo bo'lgach, davom etish uchun <b>A'zolikni tekshirish</b> tugmasini bosing.",
-        buttons: [
-          { label: "📢 Kanalga a'zo bo'lish", action: 'sub_channel', url: `https://t.me/${envVars.channel.replace('@', '')}` },
-          { label: "✅ A'zolikni tekshirish", action: 'check_sub', primary: true },
-        ],
-      });
-      return;
-    }
-
-    if (!userState.phoneVerified) {
-      addMessage({
-        sender: 'bot',
-        text: '📱 <b>TELEFON RAQAMNI TASDIQLASH</b>\n\nXavfsizlik maqsadida va zarurat tug\'ilganda siz bilan MaktabX bo\'yicha bog\'lanish uchun Telegram telefon raqamingizni yuboring.\n\nTelefon raqamingiz faqat ko\'rsatilgan MaktabX aloqa maqsadlarida ishlatiladi.',
-        buttons: [{ label: '📱 Telefon raqamimni yuborish', action: 'share_phone', primary: true }],
-      });
-    }
-  };
-
-  const handleAction = (action: string) => {
-    if (action === 'check_sub') {
-      if (!userState.channelSubscribed) {
-        addMessage({
-          sender: 'system',
-          text: "⚠️ Simulyator: Foydalanuvchi hali kanalga qo'shilmagan! (Sinov uchun telefon ostidagi 'Kanal holati' tugmasini bosing)",
-        });
+      if (wasPreviouslyVerified) {
         addMessage({
           sender: 'bot',
-          text: "❌ Siz hali kanalga a'zo bo'lmadingiz.\n\nIltimos, kanalga a'zo bo'ling va tugmani qayta bosing.",
+          text: "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETGANSIZ!</b>\n\nMaktabX xizmatidan foydalanish uchun rasmiy kanalni tark etmasligingiz so'raladi.\n\nSaytga kirish huquqini tiklash uchun iltimos kanalga <b>qayta obuna bo'ling</b> va <b>A'zolikni tekshirish</b> tugmasini bosing.",
           buttons: [
             { label: "📢 Kanalga a'zo bo'lish", action: 'sub_channel', url: `https://t.me/${envVars.channel.replace('@', '')}` },
             { label: "✅ A'zolikni tekshirish", action: 'check_sub', primary: true },
           ],
         });
       } else {
-        addMessage({ sender: 'bot', text: "✅ <b>Kanalga a'zolik tasdiqlandi.</b>" });
         addMessage({
           sender: 'bot',
-          text: '📱 <b>TELEFON RAQAMNI TASDIQLASH</b>\n\nXavfsizlik maqsadida va zarurat tug\'ilganda siz bilan MaktabX bo\'yicha bog\'lanish uchun Telegram telefon raqamingizni yuboring.\n\nTelefon raqamingiz faqat ko\'rsatilgan MaktabX aloqa maqsadlarida ishlatiladi.',
-          buttons: [{ label: '📱 Telefon raqamimni yuborish', action: 'share_phone', primary: true }],
+          text: "📢 <b>KANALGA A'ZO BO'LISH TALAB ETILADI</b>\n\nMaktabX xizmatidan foydalanish uchun rasmiy kanalimizga a'zo bo'lishingiz kerak.\n\nA'zo bo'lgach, davom etish uchun <b>A'zolikni tekshirish</b> tugmasini bosing.",
+          buttons: [
+            { label: "📢 Kanalga a'zo bo'lish", action: 'sub_channel', url: `https://t.me/${envVars.channel.replace('@', '')}` },
+            { label: "✅ A'zolikni tekshirish", action: 'check_sub', primary: true },
+          ],
         });
+      }
+      return;
+    }
+
+    // 2. Kanalda a'zo bo'lsa va telefoni avval tasdiqlangan bo'lsa -> telefon qayta so'ralmaydi, darhol sayt beriladi!
+    if (userState.phoneVerified) {
+      setUserState((prev) => ({ ...prev, accessGranted: true }));
+      addMessage({
+        sender: 'bot',
+        text: "✅ <b>Xush kelibsiz!</b>\n\nKanal a'zoligingiz va profilingiz tasdiqlangan.\nMaktabX tizimidan to'liq foydalanishingiz mumkin. Quyidagi tugma orqali kiring:",
+        buttons: [{ label: '🚀 MAKTABX GA KIRISH', action: 'open_maktabx', url: envVars.url, primary: true }],
+      });
+      return;
+    }
+
+    // 3. Kanalda a'zo bo'lsa, lekin telefoni hali berilmagan bo'lsa -> faqat bir marta so'raladi
+    addMessage({
+      sender: 'bot',
+      text: '📱 <b>TELEFON RAQAMNI TASDIQLASH</b>\n\nXavfsizlik maqsadida va zarurat tug\'ilganda siz bilan MaktabX bo\'yicha bog\'lanish uchun Telegram telefon raqamingizni yuboring.\n\nTelefon raqamingiz faqat ko\'rsatilgan MaktabX aloqa maqsadlarida ishlatiladi.',
+      buttons: [{ label: '📱 Telefon raqamimni yuborish', action: 'share_phone', primary: true }],
+    });
+  };
+
+  const handleAction = (action: string) => {
+    if (action === 'check_sub') {
+      if (!userState.channelSubscribed) {
+        setUserState((prev) => ({ ...prev, accessGranted: false }));
+        addMessage({
+          sender: 'system',
+          text: "⚠️ Simulyator: Foydalanuvchi hali kanalda emas! (Pastdagi 'Kanal holati' tugmasini bosib kanalga a'zo bo'ling)",
+        });
+        addMessage({
+          sender: 'bot',
+          text: "❌ Siz hali kanalga a'zo bo'lmadingiz.\n\nKanalni tark etmaslikni va qayta obuna bo'lishingizni so'raymiz.",
+          buttons: [
+            { label: "📢 Kanalga a'zo bo'lish", action: 'sub_channel', url: `https://t.me/${envVars.channel.replace('@', '')}` },
+            { label: "✅ A'zolikni tekshirish", action: 'check_sub', primary: true },
+          ],
+        });
+      } else {
+        // Agar telefon avval tasdiqlangan bo'lsa, qayta so'ramasdan sayt linkini beramiz!
+        if (userState.phoneVerified) {
+          setUserState((prev) => ({ ...prev, accessGranted: true }));
+          addMessage({
+            sender: 'bot',
+            text: "✅ <b>TASDIQLASH MUVAFFAQIYATLI YAKUNLANDI</b>\n\nKanal a'zoligingiz tasdiqlandi.\nMaktabX tizimiga kirish uchun quyidagi tugmani bosing:",
+            buttons: [{ label: '🚀 MAKTABX GA KIRISH', action: 'open_maktabx', url: envVars.url, primary: true }],
+          });
+        } else {
+          addMessage({ sender: 'bot', text: "✅ <b>Kanalga a'zolik tasdiqlandi.</b>" });
+          addMessage({
+            sender: 'bot',
+            text: '📱 <b>TELEFON RAQAMNI TASDIQLASH</b>\n\nXavfsizlik maqsadida va zarurat tug\'ilganda siz bilan MaktabX bo\'yicha bog\'lanish uchun Telegram telefon raqamingizni yuboring.\n\nTelefon raqamingiz faqat ko\'rsatilgan MaktabX aloqa maqsadlarida ishlatiladi.',
+            buttons: [{ label: '📱 Telefon raqamimni yuborish', action: 'share_phone', primary: true }],
+          });
+        }
       }
     } else if (action === 'share_phone') {
       const phone = '+998901234567';
-      setUserState((prev) => ({ ...prev, phoneVerified: true, phone, accessGranted: true }));
       addMessage({ sender: 'user', text: `📞 [Kontakt yuborildi: ${phone}]` });
+
+      if (!userState.channelSubscribed) {
+        setUserState((prev) => ({ ...prev, phoneVerified: true, phone, accessGranted: false }));
+        addMessage({
+          sender: 'bot',
+          text: "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETGANSIZ!</b>\n\nTelefon raqamingiz saqlandi, ammo MaktabX xizmatidan foydalanish uchun rasmiy kanalni tark etmasligingiz va obuna bo'lishingiz shart.",
+          buttons: [
+            { label: "📢 Kanalga a'zo bo'lish", action: 'sub_channel', url: `https://t.me/${envVars.channel.replace('@', '')}` },
+            { label: "✅ A'zolikni tekshirish", action: 'check_sub', primary: true },
+          ],
+        });
+        return;
+      }
+
+      setUserState((prev) => ({ ...prev, phoneVerified: true, phone, accessGranted: true }));
       addMessage({ sender: 'bot', text: '✅ <b>Telefon raqamingiz muvaffaqiyatli tasdiqlandi!</b>' });
       addMessage({
         sender: 'bot',

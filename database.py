@@ -318,6 +318,32 @@ class Database:
                 )
         return await self.get_user(telegram_id)
 
+    async def revoke_access(self, telegram_id: int) -> None:
+        """Mark channel_subscribed and access_granted as False (phone stays verified)."""
+        if self.is_sqlite:
+            import aiosqlite
+
+            async with aiosqlite.connect(self._sqlite_path) as db:
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET channel_subscribed = 0, access_granted = 0
+                    WHERE telegram_id = ?;
+                    """,
+                    (telegram_id,),
+                )
+                await db.commit()
+        else:
+            async with self._pg_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET channel_subscribed = FALSE, access_granted = FALSE
+                    WHERE telegram_id = $1;
+                    """,
+                    telegram_id,
+                )
+
     async def get_users_count(self) -> int:
         """Return total count of registered users."""
         if self.is_sqlite:
