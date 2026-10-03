@@ -47,7 +47,7 @@ maktabx-bot/
 ├── database.py             # Asinxron PostgreSQL (asyncpg) va SQLite (aiosqlite)
 ├── requirements.txt        # Kerakli Python kutubxonalari
 ├── Procfile                # Railway uchun fon ishchisi (worker) sozlamasi
-├── railway.toml            # Railway Nixpacks deployment konfiguratsiyasi
+├── railway.toml            # Railway Railpack deployment konfiguratsiyasi
 ├── .env.example            # Sozlamalar namunasi
 ├── .gitignore              # Git uchun e'tiborga olinmaydigan fayllar
 ├── README.md               # To'liq hujjat

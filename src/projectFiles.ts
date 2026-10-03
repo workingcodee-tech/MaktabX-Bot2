@@ -1319,7 +1319,7 @@ pytz>=2024.1`,
   "Procfile": `worker: python bot.py`,
 
   "railway.toml": `[build]
-builder = "NIXPACKS"
+builder = "RAILPACK"
 
 [deploy]
 startCommand = "python bot.py"

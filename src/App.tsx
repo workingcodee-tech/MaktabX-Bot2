@@ -793,7 +793,7 @@ export default function App() {
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
                   <div className="font-mono font-bold text-slate-200">railway.toml</div>
                   <pre className="text-slate-400 font-mono text-[11px]">{`[build]
-builder = "NIXPACKS"
+builder = "RAILPACK"
 
 [deploy]
 startCommand = "python bot.py"
