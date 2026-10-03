@@ -1,0 +1,6 @@
+{
+  "name": "MaktabX Telegram Bot & Deployment Hub",
+  "description": "Production-ready Python Telegram bot access gateway for MaktabX with channel verification, contact sharing, real-time admin panel, broadcast system, and Railway deployment.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
