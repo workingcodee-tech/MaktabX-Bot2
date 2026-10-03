@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -99,10 +100,41 @@ async def on_shutdown(application: Application) -> None:
 
 def main() -> None:
     """Konfiguratsiyani tekshirish va botni ishga tushirish."""
+    missing = Config.get_missing_variables()
+    if missing:
+        box_line = "=" * 70
+        logger.critical(
+            "\n%s\n"
+            "⚠️  MAKTABX BOT: MUHIT O'ZGARUVCHILARI (VARIABLES) TOPILMADI!\n"
+            "%s\n"
+            "Quyidagi majburiy o'zgaruvchilar kiritilmagan: %s\n\n"
+            "Railway'da sozlash bo'yicha ko'rsatma:\n"
+            "1. Railway konsoliga kiring: https://railway.com\n"
+            "2. 'ishchi' (yoki 'maktabx-bot') xizmatingiz ustiga bosing.\n"
+            "3. Yuqoridagi 'Variables' (O'zgaruvchilar) bo'limini oching.\n"
+            "4. 'RAW Editor' tugmasini bosing va quyidagi qiymatlarni kiriting:\n\n"
+            "TELEGRAM_BOT_TOKEN=BotFather_bergan_token\n"
+            "ADMIN_ID=Sizning_telegram_id_raqamingiz\n"
+            "CHANNEL_USERNAME=@kanalingiz_username\n"
+            "MAKTABX_URL=https://maktabx.uz\n"
+            "DATABASE_URL=${{Postgres.DATABASE_URL}}\n"
+            "TIMEZONE=Asia/Tashkent\n\n"
+            "5. 'Save' tugmasini bosing.\n"
+            "%s\n"
+            "Konteyner tez-tez qulab tushmasligi uchun 30 soniya kutilmoqda...\n",
+            box_line,
+            box_line,
+            ", ".join(missing),
+            box_line,
+        )
+        time.sleep(30)
+        sys.exit(1)
+
     try:
         config = Config.load()
     except Exception as e:
         logger.critical("Konfiguratsiya xatosi: %s", e)
+        time.sleep(10)
         sys.exit(1)
 
     db = Database(

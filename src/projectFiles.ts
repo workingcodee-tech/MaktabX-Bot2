@@ -94,10 +94,34 @@ async def on_shutdown(application: Application) -> None:
 
 
 def main() -> None:
+    missing = Config.get_missing_variables()
+    if missing:
+        box_line = "=" * 70
+        logger.critical(
+            "\\n%s\\n"
+            "⚠️  MAKTABX BOT: MUHIT O'ZGARUVCHILARI (VARIABLES) TOPILMADI!\\n"
+            "%s\\n"
+            "Quyidagi majburiy o'zgaruvchilar kiritilmagan: %s\\n\\n"
+            "Railway'da sozlash bo'yicha ko'rsatma:\\n"
+            "1. Railway konsoliga kiring: https://railway.com\\n"
+            "2. 'ishchi' xizmatingiz ustiga bosing.\\n"
+            "3. 'Variables' (O'zgaruvchilar) bo'limini oching.\\n"
+            "4. 'RAW Editor' tugmasini bosing va qiymatlarni kiriting.\\n"
+            "%s\\n"
+            "Konteyner tez-tez qulab tushmasligi uchun 30 soniya kutilmoqda...\\n",
+            box_line,
+            box_line,
+            ", ".join(missing),
+            box_line,
+        )
+        time.sleep(30)
+        sys.exit(1)
+
     try:
         config = Config.load()
     except Exception as e:
         logger.critical("Konfiguratsiya xatosi: %s", e)
+        time.sleep(10)
         sys.exit(1)
 
     db = Database(
@@ -208,6 +232,19 @@ class Config:
     database_url: str
     bot_name: str = "MaktabX Bot"
     timezone: str = "Asia/Tashkent"
+
+    @classmethod
+    def get_missing_variables(cls) -> list[str]:
+        missing = []
+        if not os.getenv("TELEGRAM_BOT_TOKEN", "").strip():
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not os.getenv("ADMIN_ID", "").strip():
+            missing.append("ADMIN_ID")
+        if not os.getenv("CHANNEL_USERNAME", "").strip():
+            missing.append("CHANNEL_USERNAME")
+        if not os.getenv("MAKTABX_URL", "").strip():
+            missing.append("MAKTABX_URL")
+        return missing
 
     @classmethod
     def load(cls) -> "Config":
