@@ -17,6 +17,7 @@ from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ConversationHandler,
     MessageHandler,
@@ -42,6 +43,7 @@ from handlers.broadcast import (
     broadcast_start_handler,
 )
 from handlers.user import (
+    channel_member_update_handler,
     check_subscription_callback,
     contact_handler,
     start_handler,
@@ -194,6 +196,11 @@ def main() -> None:
         )
     )
     application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
+    application.add_handler(
+        ChatMemberHandler(
+            channel_member_update_handler, ChatMemberHandler.CHAT_MEMBER
+        )
+    )
 
     # 4. Global xatolik tutuvchi
     application.add_error_handler(error_handler)
@@ -353,10 +360,15 @@ class Database:
                         access_granted INTEGER DEFAULT 0,
                         registered_at TEXT NOT NULL,
                         last_start_at TEXT NOT NULL,
-                        access_granted_at TEXT
+                        access_granted_at TEXT,
+                        access_message_id INTEGER
                     );
                     """
                 )
+                try:
+                    await db.execute("ALTER TABLE users ADD COLUMN access_message_id INTEGER;")
+                except Exception:
+                    pass
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);")
                 await db.commit()
             logger.info("SQLite schema initialized successfully.")
@@ -384,8 +396,10 @@ class Database:
                         access_granted BOOLEAN DEFAULT FALSE,
                         registered_at TIMESTAMPTZ NOT NULL,
                         last_start_at TIMESTAMPTZ NOT NULL,
-                        access_granted_at TIMESTAMPTZ
+                        access_granted_at TIMESTAMPTZ,
+                        access_message_id BIGINT
                     );
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS access_message_id BIGINT;
                     CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
                     CREATE INDEX IF NOT EXISTS idx_users_registered_at ON users(registered_at);
                     """
@@ -552,15 +566,25 @@ class Database:
                 )
         return await self.get_user(telegram_id)
 
+    async def save_access_message_id(self, telegram_id: int, message_id: Optional[int]) -> None:
+        if self.is_sqlite:
+            import aiosqlite
+            async with aiosqlite.connect(self._sqlite_path) as db:
+                await db.execute("UPDATE users SET access_message_id = ? WHERE telegram_id = ?;", (message_id, telegram_id))
+                await db.commit()
+        else:
+            async with self._pg_pool.acquire() as conn:
+                await conn.execute("UPDATE users SET access_message_id = $1 WHERE telegram_id = $2;", message_id, telegram_id)
+
     async def revoke_access(self, telegram_id: int) -> None:
         if self.is_sqlite:
             import aiosqlite
             async with aiosqlite.connect(self._sqlite_path) as db:
-                await db.execute("UPDATE users SET channel_subscribed = 0, access_granted = 0 WHERE telegram_id = ?;", (telegram_id,))
+                await db.execute("UPDATE users SET channel_subscribed = 0, access_granted = 0, access_message_id = NULL WHERE telegram_id = ?;", (telegram_id,))
                 await db.commit()
         else:
             async with self._pg_pool.acquire() as conn:
-                await conn.execute("UPDATE users SET channel_subscribed = FALSE, access_granted = FALSE WHERE telegram_id = $1;", telegram_id)
+                await conn.execute("UPDATE users SET channel_subscribed = FALSE, access_granted = FALSE, access_message_id = NULL WHERE telegram_id = $1;", telegram_id)
 
     async def get_users_count(self) -> int:
         if self.is_sqlite:
@@ -685,6 +709,29 @@ def _get_channel_url(channel_username: str) -> str:
     return f"https://t.me/c/{channel_username.replace('-100', '')}"
 
 
+async def _remove_access_message(bot, channel_url: str, telegram_id: int, message_id: int | None) -> None:
+    if not message_id:
+        return
+    try:
+        await bot.delete_message(chat_id=telegram_id, message_id=message_id)
+        return
+    except Exception:
+        pass
+    try:
+        await bot.edit_message_text(
+            chat_id=telegram_id,
+            message_id=message_id,
+            text=(
+                "⚠️ <b>KANALNI TARK ETGANINGIZ SABABLI SAYT HAVOLASI O'CHIRILDI!</b>\\n\\n"
+                "Qayta kanalga obuna bo'lmaguningizcha MaktabX sayt linki taqdim etilmaydi."
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_channel_subscription_keyboard(channel_url),
+        )
+    except Exception:
+        pass
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user:
@@ -724,6 +771,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as check_err:
         logger.warning("Kanal a'zoligini jonli tekshirishda xatolik (%d): %s", user.id, check_err)
 
+    channel_url = _get_channel_url(config.channel_username)
+
     if not is_member:
         was_previously_subscribed = bool(
             db_user
@@ -733,12 +782,14 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 or db_user.get("phone_verified")
             )
         )
+        if db_user and db_user.get("access_message_id"):
+            await _remove_access_message(context.bot, channel_url, user.id, db_user.get("access_message_id"))
         await db.revoke_access(user.id)
-        channel_url = _get_channel_url(config.channel_username)
         if was_previously_subscribed:
             await update.message.reply_text(
                 "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETGANSIZ!</b>\\n\\n"
-                "MaktabX xizmatidan foydalanish uchun rasmiy kanalni tark etmasligingiz so'raladi.\\n\\n"
+                "Kanalni tark etganingiz sababli sayt havolasi o'chirildi.\\n"
+                "Qayta kanalga obuna bo'lmaguningizcha sayt linki taqdim etilmaydi!\\n\\n"
                 "Saytga kirish huquqini tiklash uchun iltimos kanalga <b>qayta obuna bo'ling</b> "
                 "va <b>A'zolikni tekshirish</b> tugmasini bosing.",
                 parse_mode=ParseMode.HTML,
@@ -758,14 +809,21 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     # 4-BOSQICH: Telefon raqamini tekshirish (faqat bir marta olinadi)
     if db_user and db_user.get("phone_verified"):
+        old_msg_id = db_user.get("access_message_id")
+        if old_msg_id:
+            try:
+                await context.bot.delete_message(chat_id=user.id, message_id=old_msg_id)
+            except Exception:
+                pass
         await db.grant_access(user.id)
-        await update.message.reply_text(
+        sent_msg = await update.message.reply_text(
             "✅ <b>Xush kelibsiz!</b>\\n\\n"
             "Kanal a'zoligingiz va profilingiz tasdiqlangan.\\n"
             "MaktabX tizimidan to'liq foydalanishingiz mumkin. Quyidagi tugma orqali kiring:",
             parse_mode=ParseMode.HTML,
             reply_markup=get_maktabx_access_keyboard(config.maktabx_url),
         )
+        await db.save_access_message_id(user.id, sent_msg.message_id)
         return
 
     await update.message.reply_text(
@@ -788,6 +846,7 @@ async def check_subscription_callback(update: Update, context: ContextTypes.DEFA
 
     config: Config = context.bot_data["config"]
     db: Database = context.bot_data["db"]
+    channel_url = _get_channel_url(config.channel_username)
 
     try:
         member = await context.bot.get_chat_member(chat_id=config.channel_username, user_id=user.id)
@@ -798,20 +857,31 @@ async def check_subscription_callback(update: Update, context: ContextTypes.DEFA
         return
 
     if not is_member:
+        db_user = await db.get_user(user.id)
+        if db_user and db_user.get("access_message_id"):
+            await _remove_access_message(context.bot, channel_url, user.id, db_user.get("access_message_id"))
         await db.revoke_access(user.id)
-        await query.answer("❌ Siz hali kanalga a'zo bo'lmadingiz.\\n\\nIltimos, kanalga a'zo bo'ling va tugmani qayta bosing.", show_alert=True)
+        await query.answer("❌ Siz hali kanalga a'zo bo'lmadingiz!\\n\\nQayta kanalga obuna bo'lmaguningizcha sayt linki berilmaydi.", show_alert=True)
         return
 
     await db.update_channel_subscribed(user.id, True)
     db_user = await db.get_user(user.id)
 
     if db_user and db_user.get("phone_verified"):
+        old_msg_id = db_user.get("access_message_id")
+        if old_msg_id and query.message and old_msg_id != query.message.message_id:
+            try:
+                await context.bot.delete_message(chat_id=user.id, message_id=old_msg_id)
+            except Exception:
+                pass
         updated_user = await db.grant_access(user.id)
         await query.edit_message_text(
-            "✅ <b>TASDIQLASH MUVAFFAQIYATLI YAKUNLANDI</b>\\n\\nSiz barcha talablarni bajardingiz.\\nMaktabX tizimiga kirish uchun quyidagi tugmani bosing.",
+            "✅ <b>TASDIQLASH MUVAFFAQIYATLI YAKUNLANDI</b>\\n\\nKanal a'zoligingiz tasdiqlandi.\\nMaktabX tizimiga kirish uchun quyidagi tugmani bosing:",
             parse_mode=ParseMode.HTML,
             reply_markup=get_maktabx_access_keyboard(config.maktabx_url),
         )
+        if query.message:
+            await db.save_access_message_id(user.id, query.message.message_id)
         try:
             admin_text = format_authorized_notification(updated_user, timezone_str=config.timezone)
             await context.bot.send_message(chat_id=config.admin_id, text=admin_text, parse_mode=ParseMode.HTML, reply_markup=get_user_view_button(user.id))
@@ -862,19 +932,74 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     updated_user = await db.grant_access(user.id)
 
     await update.message.reply_text("✅ <b>Telefon raqamingiz muvaffaqiyatli tasdiqlandi!</b>", reply_markup=remove_reply_keyboard())
-    await update.message.reply_text(
+    sent_msg = await update.message.reply_text(
         "✅ <b>TASDIQLASH MUVAFFAQIYATLI YAKUNLANDI</b>\\n\\n"
         "Siz barcha talablarni bajardingiz.\\n"
         "MaktabX tizimiga kirish uchun quyidagi tugmani bosing.",
         parse_mode=ParseMode.HTML,
         reply_markup=get_maktabx_access_keyboard(config.maktabx_url),
     )
+    await db.save_access_message_id(user.id, sent_msg.message_id)
 
     try:
         admin_text = format_authorized_notification(updated_user, timezone_str=config.timezone)
         await context.bot.send_message(chat_id=config.admin_id, text=admin_text, parse_mode=ParseMode.HTML, reply_markup=get_user_view_button(user.id))
     except Exception as notify_err:
-        logger.error("Adminga ruxsat xabarnomasini yuborishda xatolik: %s", notify_err)`,
+        logger.error("Adminga ruxsat xabarnomasini yuborishda xatolik: %s", notify_err)
+
+
+async def channel_member_update_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_member_update = update.chat_member
+    if not chat_member_update:
+        return
+
+    config: Config = context.bot_data["config"]
+    db: Database = context.bot_data["db"]
+
+    chat = chat_member_update.chat
+    target_channel = config.channel_username.strip()
+
+    is_target_channel = False
+    if target_channel.startswith("@"):
+        if chat.username and f"@{chat.username.lower()}" == target_channel.lower():
+            is_target_channel = True
+    else:
+        if str(chat.id) == target_channel:
+            is_target_channel = True
+
+    if not is_target_channel:
+        return
+
+    was_member = _is_channel_member(chat_member_update.old_chat_member.status)
+    is_now_member = _is_channel_member(chat_member_update.new_chat_member.status)
+    target_user = chat_member_update.new_chat_member.user
+
+    if not target_user or target_user.is_bot or target_user.id == config.admin_id:
+        return
+
+    if was_member and not is_now_member:
+        db_user = await db.get_user(target_user.id)
+        if not db_user:
+            return
+        channel_url = _get_channel_url(config.channel_username)
+        await _remove_access_message(context.bot, channel_url, target_user.id, db_user.get("access_message_id"))
+        await db.revoke_access(target_user.id)
+        try:
+            await context.bot.send_message(
+                chat_id=target_user.id,
+                text=(
+                    "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETDINGIZ!</b>\\n\\n"
+                    "Siz rasmiy kanalimizdan chiqib ketganingiz sababli chat ichidagi "
+                    "<b>MaktabX saytiga kirish havolasi o'chirib tashlandi!</b>\\n\\n"
+                    "Qayta kanalga obuna bo'lmaguningizcha sayt linki taqdim etilmaydi.\\n"
+                    "Saytga kirishni tiklash uchun quyidagi tugma orqali kanalga <b>qayta obuna bo'ling</b> "
+                    "va <b>A'zolikni tekshirish</b> tugmasini bosing:"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_channel_subscription_keyboard(channel_url),
+            )
+        except Exception:
+            pass`,
 
   "handlers/admin.py": `"""Administrator handlerlari - MaktabX bot."""
 from __future__ import annotations

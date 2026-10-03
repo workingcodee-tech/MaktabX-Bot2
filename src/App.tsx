@@ -551,10 +551,51 @@ export default function App() {
                         <span>Kanal holati:</span>
                         <button
                           onClick={() => {
+                            const willBeSubscribed = !userState.channelSubscribed;
                             setUserState((prev) => ({
                               ...prev,
-                              channelSubscribed: !prev.channelSubscribed,
+                              channelSubscribed: willBeSubscribed,
+                              accessGranted: willBeSubscribed ? prev.accessGranted : false,
                             }));
+
+                            // Agar foydalanuvchi kanaldan chiqib ketsa (true -> false):
+                            if (!willBeSubscribed) {
+                              const time = new Date().toLocaleTimeString('uz-UZ', { hour12: false });
+                              setChatMessages((prev) => {
+                                const hadAccessMessage = prev.some((m) =>
+                                  m.buttons?.some((b) => b.action === 'open_maktabx')
+                                );
+                                // Chat ichidagi saytga olib kiradigan xabarni o'chirib tashlaymiz!
+                                const filtered = prev.filter(
+                                  (m) => !m.buttons?.some((b) => b.action === 'open_maktabx')
+                                );
+
+                                if (hadAccessMessage || userState.phoneVerified) {
+                                  return [
+                                    ...filtered,
+                                    {
+                                      sender: 'system',
+                                      text: "🗑️ Kanal tark etildi: Chatdagi MaktabX sayt linki xabari avtomatik o'chirib tashlandi!",
+                                      timestamp: time,
+                                    },
+                                    {
+                                      sender: 'bot',
+                                      text: "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETDINGIZ!</b>\n\nSiz rasmiy kanalimizdan chiqib ketganingiz sababli chat ichidagi <b>MaktabX saytiga kirish havolasi o'chirib tashlandi!</b>\n\nQayta kanalga obuna bo'lmaguningizcha sayt linki taqdim etilmaydi.\nSaytga kirishni tiklash uchun quyidagi tugma orqali kanalga <b>qayta obuna bo'ling</b> va <b>A'zolikni tekshirish</b> tugmasini bosing:",
+                                      buttons: [
+                                        {
+                                          label: "📢 Kanalga a'zo bo'lish",
+                                          action: 'sub_channel',
+                                          url: `https://t.me/${envVars.channel.replace('@', '')}`,
+                                        },
+                                        { label: "✅ A'zolikni tekshirish", action: 'check_sub', primary: true },
+                                      ],
+                                      timestamp: time,
+                                    },
+                                  ];
+                                }
+                                return filtered;
+                              });
+                            }
                           }}
                           className={`px-2 py-0.5 rounded font-medium text-[10px] cursor-pointer ${
                             userState.channelSubscribed

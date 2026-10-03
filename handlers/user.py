@@ -47,6 +47,37 @@ def _get_channel_url(channel_username: str) -> str:
     return f"https://t.me/c/{channel_username.replace('-100', '')}"
 
 
+async def _remove_access_message(
+    bot, channel_url: str, telegram_id: int, message_id: Optional[int]
+) -> None:
+    """Chat ichidagi saytga olib kiradigan xabarni o'chirib tashlash (yoki tahrirlab yopish)."""
+    if not message_id:
+        return
+    try:
+        await bot.delete_message(chat_id=telegram_id, message_id=message_id)
+        return
+    except Exception as del_err:
+        logger.debug(
+            "Sayt linki xabarini o'chirib bo'lmadi (%d, %s), tahrirlanmoqda: %s",
+            telegram_id,
+            message_id,
+            del_err,
+        )
+    try:
+        await bot.edit_message_text(
+            chat_id=telegram_id,
+            message_id=message_id,
+            text=(
+                "⚠️ <b>KANALNI TARK ETGANINGIZ SABABLI SAYT HAVOLASI O'CHIRILDI!</b>\n\n"
+                "Qayta kanalga obuna bo'lmaguningizcha MaktabX sayt linki taqdim etilmaydi."
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_channel_subscription_keyboard(channel_url),
+        )
+    except Exception as edit_err:
+        logger.debug("Eski kirish xabarini tahrirlab ham bo'lmadi: %s", edit_err)
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Foydalanuvchi va admin uchun /start buyrug'ini qabul qilish."""
     user = update.effective_user
@@ -100,6 +131,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             check_err,
         )
 
+    channel_url = _get_channel_url(config.channel_username)
+
     # AGAR FOYDALANUVCHI KANALDA BO'LMASA (Chiqib ketgan yoki a'zo bo'lmagan bo'lsa):
     if not is_member:
         was_previously_subscribed = bool(
@@ -110,14 +143,20 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 or db_user.get("phone_verified")
             )
         )
+        # Agar chatda eski sayt linki xabari bo'lsa, uni darhol o'chirib tashlash
+        if db_user and db_user.get("access_message_id"):
+            await _remove_access_message(
+                context.bot, channel_url, user.id, db_user.get("access_message_id")
+            )
+
         # Avvalgi ruxsatni bekor qilish (lekin telefon raqami saqlanib qoladi!)
         await db.revoke_access(user.id)
-        channel_url = _get_channel_url(config.channel_username)
 
         if was_previously_subscribed:
             await update.message.reply_text(
                 "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETGANSIZ!</b>\n\n"
-                "MaktabX xizmatidan foydalanish uchun rasmiy kanalni tark etmasligingiz so'raladi.\n\n"
+                "Kanalni tark etganingiz sababli sayt havolasi o'chirildi.\n"
+                "Qayta kanalga obuna bo'lmaguningizcha sayt linki taqdim etilmaydi!\n\n"
                 "Saytga kirish huquqini tiklash uchun iltimos kanalga <b>qayta obuna bo'ling</b> "
                 "va <b>A'zolikni tekshirish</b> tugmasini bosing.",
                 parse_mode=ParseMode.HTML,
@@ -138,15 +177,24 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     # 4-BOSQICH: Telefon raqamini tekshirish (faqat bir marta so'raladi)
     if db_user and db_user.get("phone_verified"):
+        # Eski kirish xabari bo'lsa tozalash (chatda faqat bitta faol link turishi uchun)
+        old_msg_id = db_user.get("access_message_id")
+        if old_msg_id:
+            try:
+                await context.bot.delete_message(chat_id=user.id, message_id=old_msg_id)
+            except Exception:
+                pass
+
         # Telefon allaqachon tasdiqlangan va kanal a'zosi - darhol sayt linkini beramiz!
         await db.grant_access(user.id)
-        await update.message.reply_text(
+        sent_msg = await update.message.reply_text(
             "✅ <b>Xush kelibsiz!</b>\n\n"
             "Kanal a'zoligingiz va profilingiz tasdiqlangan.\n"
             "MaktabX tizimidan to'liq foydalanishingiz mumkin. Quyidagi tugma orqali kiring:",
             parse_mode=ParseMode.HTML,
             reply_markup=get_maktabx_access_keyboard(config.maktabx_url),
         )
+        await db.save_access_message_id(user.id, sent_msg.message_id)
         return
 
     # Telefon raqami hali berilmagan bo'lsa - faqat bir marta so'rash
@@ -173,6 +221,7 @@ async def check_subscription_callback(
 
     config: Config = context.bot_data["config"]
     db: Database = context.bot_data["db"]
+    channel_url = _get_channel_url(config.channel_username)
 
     # Telegram Bot API orqali kanal a'zoligini tekshirish
     is_member = False
@@ -196,10 +245,15 @@ async def check_subscription_callback(
         return
 
     if not is_member:
+        db_user = await db.get_user(user.id)
+        if db_user and db_user.get("access_message_id"):
+            await _remove_access_message(
+                context.bot, channel_url, user.id, db_user.get("access_message_id")
+            )
         await db.revoke_access(user.id)
         await query.answer(
-            "❌ Siz hali kanalga a'zo bo'lmadingiz.\n\n"
-            "Iltimos, kanalga a'zo bo'ling va tugmani qayta bosing.",
+            "❌ Siz hali kanalga a'zo bo'lmadingiz!\n\n"
+            "Qayta kanalga obuna bo'lmaguningizcha sayt linki berilmaydi.",
             show_alert=True,
         )
         return
@@ -210,14 +264,26 @@ async def check_subscription_callback(
 
     # Agar telefon raqami allaqachon mavjud bo'lsa (bir marotaba olingan), to'g'ridan-to'g'ri ruxsat berish!
     if db_user and db_user.get("phone_verified"):
+        old_msg_id = db_user.get("access_message_id")
+        if old_msg_id and query.message and old_msg_id != query.message.message_id:
+            try:
+                await context.bot.delete_message(chat_id=user.id, message_id=old_msg_id)
+            except Exception:
+                pass
+
         updated_user = await db.grant_access(user.id)
-        await query.edit_message_text(
+        edited_msg = await query.edit_message_text(
             "✅ <b>TASDIQLASH MUVAFFAQIYATLI YAKUNLANDI</b>\n\n"
             "Kanal a'zoligingiz tasdiqlandi.\n"
             "MaktabX tizimiga kirish uchun quyidagi tugmani bosing:",
             parse_mode=ParseMode.HTML,
             reply_markup=get_maktabx_access_keyboard(config.maktabx_url),
         )
+        if query.message:
+            await db.save_access_message_id(user.id, query.message.message_id)
+        elif hasattr(edited_msg, "message_id"):
+            await db.save_access_message_id(user.id, edited_msg.message_id)
+
         try:
             admin_text = format_authorized_notification(
                 updated_user, timezone_str=config.timezone
@@ -284,9 +350,7 @@ async def contact_handler(
     await db.update_phone_number(user.id, phone)
 
     # Ruxsat berishdan oldin kanal a'zoligini qayta tekshirish
-    db_user = await db.get_user(user.id)
-    is_channel_sub = db_user.get("channel_subscribed", False) if db_user else False
-
+    is_channel_sub = False
     try:
         member = await context.bot.get_chat_member(
             chat_id=config.channel_username, user_id=user.id
@@ -298,10 +362,12 @@ async def contact_handler(
         logger.debug("Qayta kanal tekshiruvi: %s", e)
 
     if not is_channel_sub:
+        await db.revoke_access(user.id)
         channel_url = _get_channel_url(config.channel_username)
         await update.message.reply_text(
             "📢 <b>Kanalga a'zolik mavjud emas</b>\n\n"
-            "Telefon raqamingiz qabul qilindi, ammo siz hali rasmiy kanalimizga a'zo emassiz.",
+            "Telefon raqamingiz qabul qilindi, ammo siz hali rasmiy kanalimizga a'zo emassiz.\n"
+            "Qayta obuna bo'lmaguningizcha sayt linki berilmaydi.",
             parse_mode=ParseMode.HTML,
             reply_markup=get_channel_subscription_keyboard(channel_url),
         )
@@ -312,16 +378,18 @@ async def contact_handler(
 
     await update.message.reply_text(
         "✅ <b>Telefon raqamingiz muvaffaqiyatli tasdiqlandi!</b>",
+        parse_mode=ParseMode.HTML,
         reply_markup=remove_reply_keyboard(),
     )
 
-    await update.message.reply_text(
+    sent_msg = await update.message.reply_text(
         "✅ <b>TASDIQLASH MUVAFFAQIYATLI YAKUNLANDI</b>\n\n"
         "Siz barcha talablarni bajardingiz.\n"
         "MaktabX tizimiga kirish uchun quyidagi tugmani bosing.",
         parse_mode=ParseMode.HTML,
         reply_markup=get_maktabx_access_keyboard(config.maktabx_url),
     )
+    await db.save_access_message_id(user.id, sent_msg.message_id)
 
     # Adminga real vaqtda xabar berish
     try:
@@ -336,3 +404,80 @@ async def contact_handler(
         )
     except Exception as notify_err:
         logger.error("Adminga ruxsat xabarnomasini yuborishda xatolik: %s", notify_err)
+
+
+async def channel_member_update_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Foydalanuvchi kanalni tark etgan zahoti (real-time) buni aniqlash,
+    chat ichidagi sayt linki xabarini o'chirib tashlash va foydalanuvchini ogohlantirish.
+    """
+    chat_member_update = update.chat_member
+    if not chat_member_update:
+        return
+
+    config: Config = context.bot_data["config"]
+    db: Database = context.bot_data["db"]
+
+    chat = chat_member_update.chat
+    target_channel = config.channel_username.strip()
+
+    # Hodisa aynan bizning kanalimizda yuz berganini tekshirish
+    is_target_channel = False
+    if target_channel.startswith("@"):
+        if chat.username and f"@{chat.username.lower()}" == target_channel.lower():
+            is_target_channel = True
+    else:
+        if str(chat.id) == target_channel:
+            is_target_channel = True
+
+    if not is_target_channel:
+        return
+
+    old_status = chat_member_update.old_chat_member.status
+    new_status = chat_member_update.new_chat_member.status
+
+    was_member = _is_channel_member(old_status)
+    is_now_member = _is_channel_member(new_status)
+
+    target_user = chat_member_update.new_chat_member.user
+    if not target_user or target_user.is_bot or target_user.id == config.admin_id:
+        return
+
+    # 1-HOLAT: Foydalanuvchi kanaldan chiqib ketdi!
+    if was_member and not is_now_member:
+        db_user = await db.get_user(target_user.id)
+        if not db_user:
+            return
+
+        channel_url = _get_channel_url(config.channel_username)
+        old_msg_id = db_user.get("access_message_id")
+
+        # Chat ichidagi saytga olib kiradigan xabarni darhol o'chirib tashlash!
+        await _remove_access_message(context.bot, channel_url, target_user.id, old_msg_id)
+
+        # Bazada ruxsatni bekor qilish (telefon raqami esa saqlanib qoladi)
+        await db.revoke_access(target_user.id)
+
+        # Foydalanuvchiga kanalni tark etgani va qayta obuna bo'lmaguncha sayt berilmasligini xabar qilish
+        try:
+            await context.bot.send_message(
+                chat_id=target_user.id,
+                text=(
+                    "⚠️ <b>DIQQAT: SIZ KANALNI TARK ETDINGIZ!</b>\n\n"
+                    "Siz rasmiy kanalimizdan chiqib ketganingiz sababli chat ichidagi "
+                    "<b>MaktabX saytiga kirish havolasi o'chirib tashlandi!</b>\n\n"
+                    "Qayta kanalga obuna bo'lmaguningizcha sayt linki taqdim etilmaydi.\n"
+                    "Saytga kirishni tiklash uchun quyidagi tugma orqali kanalga <b>qayta obuna bo'ling</b> "
+                    "va <b>A'zolikni tekshirish</b> tugmasini bosing:"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_channel_subscription_keyboard(channel_url),
+            )
+        except Exception as notify_err:
+            logger.debug(
+                "Kanaldan chiqqan foydalanuvchiga (%d) ogohlantirish yuborib bo'lmadi: %s",
+                target_user.id,
+                notify_err,
+            )

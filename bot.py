@@ -17,6 +17,7 @@ from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ConversationHandler,
     MessageHandler,
@@ -42,6 +43,7 @@ from handlers.broadcast import (
     broadcast_start_handler,
 )
 from handlers.user import (
+    channel_member_update_handler,
     check_subscription_callback,
     contact_handler,
     start_handler,
@@ -226,6 +228,11 @@ def main() -> None:
         )
     )
     application.add_handler(MessageHandler(filters.CONTACT, contact_handler))
+    application.add_handler(
+        ChatMemberHandler(
+            channel_member_update_handler, ChatMemberHandler.CHAT_MEMBER
+        )
+    )
 
     # 4. Global xatolik tutuvchi
     application.add_error_handler(error_handler)

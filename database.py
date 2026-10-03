@@ -56,10 +56,15 @@ class Database:
                         access_granted INTEGER DEFAULT 0,
                         registered_at TEXT NOT NULL,
                         last_start_at TEXT NOT NULL,
-                        access_granted_at TEXT
+                        access_granted_at TEXT,
+                        access_message_id INTEGER
                     );
                     """
                 )
+                try:
+                    await db.execute("ALTER TABLE users ADD COLUMN access_message_id INTEGER;")
+                except Exception:
+                    pass
                 await db.execute(
                     "CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);"
                 )
@@ -90,8 +95,10 @@ class Database:
                         access_granted BOOLEAN DEFAULT FALSE,
                         registered_at TIMESTAMPTZ NOT NULL,
                         last_start_at TIMESTAMPTZ NOT NULL,
-                        access_granted_at TIMESTAMPTZ
+                        access_granted_at TIMESTAMPTZ,
+                        access_message_id BIGINT
                     );
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS access_message_id BIGINT;
                     CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
                     CREATE INDEX IF NOT EXISTS idx_users_registered_at ON users(registered_at);
                     """
@@ -318,8 +325,29 @@ class Database:
                 )
         return await self.get_user(telegram_id)
 
+    async def save_access_message_id(
+        self, telegram_id: int, message_id: Optional[int]
+    ) -> None:
+        """Save the message_id of the MaktabX website access message so it can be deleted if user leaves channel."""
+        if self.is_sqlite:
+            import aiosqlite
+
+            async with aiosqlite.connect(self._sqlite_path) as db:
+                await db.execute(
+                    "UPDATE users SET access_message_id = ? WHERE telegram_id = ?;",
+                    (message_id, telegram_id),
+                )
+                await db.commit()
+        else:
+            async with self._pg_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET access_message_id = $1 WHERE telegram_id = $2;",
+                    message_id,
+                    telegram_id,
+                )
+
     async def revoke_access(self, telegram_id: int) -> None:
-        """Mark channel_subscribed and access_granted as False (phone stays verified)."""
+        """Mark channel_subscribed and access_granted as False, clear access_message_id (phone stays verified)."""
         if self.is_sqlite:
             import aiosqlite
 
@@ -327,7 +355,7 @@ class Database:
                 await db.execute(
                     """
                     UPDATE users
-                    SET channel_subscribed = 0, access_granted = 0
+                    SET channel_subscribed = 0, access_granted = 0, access_message_id = NULL
                     WHERE telegram_id = ?;
                     """,
                     (telegram_id,),
@@ -338,7 +366,7 @@ class Database:
                 await conn.execute(
                     """
                     UPDATE users
-                    SET channel_subscribed = FALSE, access_granted = FALSE
+                    SET channel_subscribed = FALSE, access_granted = FALSE, access_message_id = NULL
                     WHERE telegram_id = $1;
                     """,
                     telegram_id,
